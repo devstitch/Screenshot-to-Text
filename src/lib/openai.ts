@@ -1,16 +1,31 @@
 import OpenAI from "openai";
 import sharp from "sharp";
 
-if (!process.env.OPENAI_API_KEY) {
-  throw new Error("Please add your OpenAI API key to .env.local");
+// Lazy initialization to avoid build-time errors
+let openaiClient: OpenAI | null = null;
+
+/**
+ * Get OpenAI client instance (lazy initialization)
+ */
+function getOpenAIClient(): OpenAI {
+  if (!openaiClient) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error("Please add your OpenAI API key to .env.local");
+    }
+    openaiClient = new OpenAI({ apiKey });
+  }
+  return openaiClient;
 }
 
 /**
- * OpenAI client instance
+ * OpenAI client instance (for backward compatibility)
  */
-export const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+export const openai = {
+  get chat() {
+    return getOpenAIClient().chat;
+  },
+};
 
 /**
  * Supported image MIME types

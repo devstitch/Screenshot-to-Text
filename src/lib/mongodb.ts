@@ -1,11 +1,14 @@
 import { MongoClient, Db, Collection, ObjectId } from "mongodb";
 import { Screenshot, DatabaseStats } from "@/types";
 
-if (!process.env.MONGODB_URI) {
-  throw new Error("Please add your Mongo URI to .env.local");
+// Environment variable check moved to connection time to avoid build-time errors
+function getMongoUri(): string {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) {
+    throw new Error("Please add your Mongo URI to .env.local");
+  }
+  return uri;
 }
-
-const uri: string = process.env.MONGODB_URI;
 const dbName: string = process.env.MONGODB_DB_NAME || "screenshot_ocr";
 const collectionName = "screenshots";
 
@@ -37,15 +40,16 @@ export async function connectToDatabase(): Promise<ConnectResult> {
   }
 
   // Create new connection with retry logic
-  let retries = 3;
+  let retries = 2; // Reduced retries for faster failure
   let lastError: Error | null = null;
 
   while (retries > 0) {
     try {
-      const client = new MongoClient(uri, {
+      const client = new MongoClient(getMongoUri(), {
         maxPoolSize: 10,
-        serverSelectionTimeoutMS: 5000,
-        socketTimeoutMS: 45000,
+        serverSelectionTimeoutMS: 2000, // Reduced from 5000ms for faster failure
+        socketTimeoutMS: 10000, // Reduced from 45000ms
+        connectTimeoutMS: 2000, // Add explicit connect timeout
       });
 
       await client.connect();
@@ -62,10 +66,12 @@ export async function connectToDatabase(): Promise<ConnectResult> {
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       retries--;
-      
+
       if (retries > 0) {
         // Wait before retrying (exponential backoff)
-        await new Promise((resolve) => setTimeout(resolve, 1000 * (4 - retries)));
+        await new Promise((resolve) =>
+          setTimeout(resolve, 1000 * (4 - retries))
+        );
       }
     }
   }
@@ -97,11 +103,11 @@ export async function getCollection(): Promise<Collection<Screenshot>> {
 async function ensureIndexes(db: Db): Promise<void> {
   try {
     const collection = db.collection(collectionName);
-    
+
     // Create indexes
     await collection.createIndex({ createdAt: -1 });
     await collection.createIndex({ userId: 1 });
-    
+
     console.log("MongoDB indexes ensured");
   } catch (error) {
     console.error("Error creating indexes:", error);
@@ -116,19 +122,19 @@ export async function saveScreenshot(
   data: Omit<Screenshot, "_id" | "createdAt">
 ): Promise<Screenshot> {
   const collection = await getCollection();
-  
+
   const screenshot: Omit<Screenshot, "_id"> = {
     ...data,
     createdAt: new Date(),
   };
 
   const result = await collection.insertOne(screenshot as Screenshot);
-  
+
   const created = await collection.findOne({ _id: result.insertedId });
   if (!created) {
     throw new Error("Failed to create screenshot");
   }
-  
+
   return created;
 }
 
@@ -139,12 +145,8 @@ export async function getScreenshotHistory(
   limit: number = 50
 ): Promise<Screenshot[]> {
   const collection = await getCollection();
-  
-  return collection
-    .find({})
-    .sort({ createdAt: -1 })
-    .limit(limit)
-    .toArray();
+
+  return collection.find({}).sort({ createdAt: -1 }).limit(limit).toArray();
 }
 
 /**
@@ -154,7 +156,7 @@ export async function getScreenshotById(
   id: string
 ): Promise<Screenshot | null> {
   const collection = await getCollection();
-  
+
   try {
     const objectId = new ObjectId(id);
     return collection.findOne({ _id: objectId });
@@ -169,7 +171,7 @@ export async function getScreenshotById(
  */
 export async function deleteScreenshot(id: string): Promise<boolean> {
   const collection = await getCollection();
-  
+
   try {
     const objectId = new ObjectId(id);
     const result = await collection.deleteOne({ _id: objectId });
@@ -185,7 +187,7 @@ export async function deleteScreenshot(id: string): Promise<boolean> {
  */
 export async function getStats(): Promise<DatabaseStats> {
   const collection = await getCollection();
-  
+
   const pipeline = [
     {
       $group: {
@@ -205,7 +207,7 @@ export async function getStats(): Promise<DatabaseStats> {
   ];
 
   const result = await collection.aggregate(pipeline).toArray();
-  
+
   if (result.length === 0) {
     return {
       totalScreenshots: 0,
